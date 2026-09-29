@@ -1,0 +1,31 @@
+# Secrets & environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+*credentials*.json
+
+# n8n local data (database, encryption key, logs, binary data)
+.n8n/
+n8n_data/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Logs & temp
+*.log
+logs/
+tmp/
+*.tmp
+
+# Node (if any helper scripts are added)
+node_modules/
+
+# OS & editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

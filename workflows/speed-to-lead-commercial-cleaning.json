@@ -1,0 +1,1065 @@
+{
+  "name": "Speed-to-Lead — Commercial Cleaning",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "speed-to-lead",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -32,
+        0
+      ],
+      "id": "26f5e8db-e007-40cc-a000-e568fb88ebde",
+      "name": "Webhook",
+      "webhookId": "67d9a416-2435-4491-a8be-7b1f38b97a24"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\n\nconst normalizeString = (value) =>\n  typeof value === 'string' ? value.trim() : '';\n\nconst email = normalizeString(body.email).toLowerCase();\n\nconst phone = normalizeString(body.phone)\n  .replace(/[^\\d+]/g, '');\n\nconst firstName = normalizeString(body.first_name);\nconst lastName = normalizeString(body.last_name);\nconst company = normalizeString(body.company);\nconst message = normalizeString(body.message);\n\nconst errors = [];\n\nif (!email) errors.push('email is required');\nif (!message) errors.push('message is required');\n\nif (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {\n  errors.push('email is invalid');\n}\n\nreturn [\n  {\n    json: {\n      lead: {\n        first_name: firstName,\n        last_name: lastName,\n        email,\n        phone,\n        company,\n        message,\n      },\n\n      metadata: {\n        received_at: new Date().toISOString(),\n        source: 'website_form',\n      },\n\n      validation: {\n        valid: errors.length === 0,\n        errors,\n      },\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "6c3b967c-3e48-4534-86a8-7d64dd8d2bd4",
+      "name": "Normalize Lead"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "978eb550-7c12-431e-bb3b-25b98bdc480e",
+              "leftValue": "={{ $json.validation.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        0
+      ],
+      "id": "ae97dfcf-b8ee-4e6a-81e7-76daeb15993b",
+      "name": "Valid Lead?"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-5-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an inbound lead analysis system for a commercial cleaning company.\n\nYour job is to extract structured facts from inbound inquiries.\n\nThe company:\n- Provides commercial cleaning services only.\n- Does not provide residential, apartment, or home cleaning.\n- Primary service area is the greater Seattle area.\n- Typical customers are businesses, offices, medical practices, retail locations, property managers, and multi-location organizations.\n- The sales team prioritizes requests for quotes, recurring commercial service, multiple facilities, and service needed soon.\n\nYour task is ONLY to analyze and classify the lead.\n\nDo NOT decide whether the lead should be accepted, rejected, or routed to sales.\nDo NOT invent information that is not present in the inquiry.\nIf a value cannot be determined, return null or \"unknown\" as appropriate.\n\nReturn structured JSON only.\n\nThe JSON must contain exactly these fields:\n\n{\n  \"customer_type\": \"commercial | residential | unknown\",\n  \"service\": \"commercial_cleaning | residential_cleaning | other | unknown\",\n  \"location\": \"string or null\",\n  \"facility_count\": \"number or null\",\n  \"intent\": \"request_quote | information_gathering | immediate_service | other | unknown\",\n  \"timeline\": \"immediate | within_30_days | within_90_days | later | unknown\",\n  \"recurring_service\": \"boolean or null\",\n  \"confidence\": \"number from 0.0 to 1.0\",\n  \"reasoning_summary\": \"short factual explanation\"\n}\n\nConfidence should represent how confident you are that the classification is supported by the text.\n\nDo not include markdown.\nDo not include code fences.\nDo not include any text before or after the JSON object."
+            },
+            {
+              "content": "=Analyze this inbound lead.\n\nFirst name:\n{{ $json.lead.first_name }}\n\nLast name:\n{{ $json.lead.last_name }}\n\nEmail:\n{{ $json.lead.email }}\n\nPhone:\n{{ $json.lead.phone }}\n\nCompany:\n{{ $json.lead.company }}\n\nInquiry:\n{{ $json.lead.message }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 500,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        -96
+      ],
+      "id": "7215626c-1eb3-4c1f-ab00-1641b9217204",
+      "name": "AI Lead Analysis"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Get the text returned by the OpenAI Message a Model node.\nconst rawText =\n  $json.output?.[0]?.content?.find(\n    (item) => item.type === 'output_text'\n  )?.text ?? null;\n\n// Recover the original normalized lead/envelope.\n// The OpenAI node's output does not automatically preserve it.\nconst original = $('Valid Lead?').item.json;\n\nconst validationErrors = [];\nlet analysis = null;\n\n// 1. Make sure OpenAI actually returned text.\nif (!rawText) {\n  validationErrors.push('AI response contained no output text');\n}\n\n// 2. Parse the JSON.\nif (rawText) {\n  try {\n    analysis = JSON.parse(rawText);\n  } catch (error) {\n    validationErrors.push(\n      `AI response was not valid JSON: ${error.message}`\n    );\n  }\n}\n\n// 3. Validate the parsed structure.\nif (analysis) {\n  const allowedCustomerTypes = [\n    'commercial',\n    'residential',\n    'unknown',\n  ];\n\n  const allowedServices = [\n    'commercial_cleaning',\n    'residential_cleaning',\n    'other',\n    'unknown',\n  ];\n\n  const allowedIntents = [\n    'request_quote',\n    'information_gathering',\n    'immediate_service',\n    'other',\n    'unknown',\n  ];\n\n  const allowedTimelines = [\n    'immediate',\n    'within_30_days',\n    'within_90_days',\n    'later',\n    'unknown',\n  ];\n\n  if (!allowedCustomerTypes.includes(analysis.customer_type)) {\n    validationErrors.push('Invalid customer_type');\n  }\n\n  if (!allowedServices.includes(analysis.service)) {\n    validationErrors.push('Invalid service');\n  }\n\n  if (!allowedIntents.includes(analysis.intent)) {\n    validationErrors.push('Invalid intent');\n  }\n\n  if (!allowedTimelines.includes(analysis.timeline)) {\n    validationErrors.push('Invalid timeline');\n  }\n\n  if (\n    analysis.location !== null &&\n    typeof analysis.location !== 'string'\n  ) {\n    validationErrors.push('location must be a string or null');\n  }\n\n  if (\n    analysis.facility_count !== null &&\n    typeof analysis.facility_count !== 'number'\n  ) {\n    validationErrors.push(\n      'facility_count must be a number or null'\n    );\n  }\n\n  if (\n    analysis.recurring_service !== null &&\n    typeof analysis.recurring_service !== 'boolean'\n  ) {\n    validationErrors.push(\n      'recurring_service must be a boolean or null'\n    );\n  }\n\n  if (\n    typeof analysis.confidence !== 'number' ||\n    analysis.confidence < 0 ||\n    analysis.confidence > 1\n  ) {\n    validationErrors.push(\n      'confidence must be a number between 0 and 1'\n    );\n  }\n\n  if (typeof analysis.reasoning_summary !== 'string') {\n    validationErrors.push(\n      'reasoning_summary must be a string'\n    );\n  }\n}\n\n// Return the original lead plus the structured AI analysis.\nreturn {\n  ...original,\n\n  ai_analysis: analysis,\n\n  ai_validation: {\n    valid: validationErrors.length === 0,\n    errors: validationErrors,\n  },\n\n  raw_ai_output: rawText,\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -96
+      ],
+      "id": "5bb3c2e0-e474-4fd4-bb61-1836cffc4eab",
+      "name": "Parse & Validate AI Output"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const analysis = $json.ai_analysis;\nconst aiValid = $json.ai_validation?.valid === true;\n\nlet qualification = 'HUMAN_REVIEW';\nlet qualificationReason = 'Unable to determine qualification automatically';\n\n// 1. Invalid or malformed AI output always requires review.\nif (!aiValid || !analysis) {\n  qualification = 'HUMAN_REVIEW';\n  qualificationReason = 'AI analysis failed validation';\n}\n\n// 2. Low-confidence AI result requires human review.\nelse if (analysis.confidence < 0.75) {\n  qualification = 'HUMAN_REVIEW';\n  qualificationReason = 'AI confidence below 0.75 threshold';\n}\n\n// 3. Explicit residential requests are not qualified.\nelse if (\n  analysis.customer_type === 'residential' ||\n  analysis.service === 'residential_cleaning'\n) {\n  qualification = 'NOT_QUALIFIED';\n  qualificationReason = 'Business provides commercial cleaning only';\n}\n\n// 4. Strong commercial quote opportunity.\nelse if (\n  analysis.customer_type === 'commercial' &&\n  analysis.service === 'commercial_cleaning' &&\n  analysis.intent === 'request_quote' &&\n  (\n    analysis.timeline === 'immediate' ||\n    analysis.timeline === 'within_30_days' ||\n    analysis.timeline === 'within_90_days'\n  )\n) {\n  qualification = 'HIGH_PRIORITY';\n  qualificationReason = 'Qualified commercial quote opportunity';\n}\n\n// 5. Everything else gets human review.\nelse {\n  qualification = 'HUMAN_REVIEW';\n  qualificationReason =\n    'Lead is not clearly qualified or disqualified by deterministic rules';\n}\n\nreturn {\n  ...$json,\n\n  qualification: {\n    status: qualification,\n    reason: qualificationReason,\n    evaluated_at: new Date().toISOString(),\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        -96
+      ],
+      "id": "1d565589-3f61-4730-ad60-f54243f74f59",
+      "name": "Qualification Rules"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.qualification.status }}",
+                    "rightValue": "HIGH_PRIORITY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "107ed561-21ee-4bea-9eac-2063f76dd52e"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HIGH_PRIORITY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "20fd590c-2305-49c7-a8c2-25082e81a7c8",
+                    "leftValue": "={{ $json.qualification.status }}",
+                    "rightValue": "NOT_QUALIFIED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NOT_QUALIFIED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "eb1cd7d4-a651-4760-af43-d4e972e62e34",
+                    "leftValue": "={{ $json.qualification.status }}",
+                    "rightValue": "HUMAN_REVIEW",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HUMAN_REVIEW"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1488,
+        -96
+      ],
+      "id": "0d323d88-78c8-42e7-a78f-63e9fb064579",
+      "name": "Route Lead"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "email": "={{ $json.lead.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.lead.company }}",
+          "firstName": "={{ $json.lead.first_name }}",
+          "lastName": "={{ $json.lead.last_name }}",
+          "phoneNumber": "={{ $json.lead.phone }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1728,
+        -320
+      ],
+      "id": "efa5d33f-5594-4702-b5c2-439cf8b87851",
+      "name": "Create or update a contact"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "company",
+        "operation": "searchByDomain",
+        "domain": "={{ $json.properties.email.value.split('@')[1] }}",
+        "limit": 1,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1936,
+        -320
+      ],
+      "id": "db153e3e-930d-4cb2-b9e0-073c3a0bd01d",
+      "name": "Find Company by Domain",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "efa504f9-450c-46c5-ad10-5d9cb61d6873",
+              "leftValue": "={{ $json.companyId !== undefined && $json.companyId !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2160,
+        -320
+      ],
+      "id": "87ba56d7-315a-4da5-9677-2c1d2e6aaffc",
+      "name": "Company Found?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const original = $('Route Lead').item.json;\n\nreturn {\n  ...original,\n  hubspot: {\n    contact_id: $('Create or update a contact').item.json.vid,\n    company_id: $json.companyId,\n    company_domain: $json.properties?.domain?.value ?? null,\n    company_was_created: false,\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        -464
+      ],
+      "id": "ec47c611-27a1-47c4-b062-900a5b837c1b",
+      "name": "Use Existing Company"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "company",
+        "name": "={{ $('Route Lead').item.json.lead.company }}",
+        "additionalFields": {
+          "companyDomainName": "={{ $('Create or update a contact').item.json.properties.email.value.split('@')[1] }}"
+        }
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        -176
+      ],
+      "id": "eabe56cf-271b-4ffe-8d0e-92ce49ad04bb",
+      "name": "Create Company"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const original = $('Route Lead').item.json;\n\nconst companyId = $json.companyId ?? $json.id;\n\nif (!companyId) {\n  throw new Error('HubSpot company creation returned no company ID');\n}\n\nreturn {\n  ...original,\n\n  hubspot: {\n    contact_id: $('Create or update a contact').item.json.vid,\n    company_id: companyId,\n    company_domain:\n      $('Create or update a contact')\n        .item.json.properties.email.value\n        .split('@')[1],\n    company_was_created: true,\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2608,
+        -176
+      ],
+      "id": "e05267a6-9b2c-421c-adf9-4ca1c1535cfb",
+      "name": "Use New Company"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "deal",
+        "stage": "REPLACE_WITH_HUBSPOT_DEAL_STAGE_ID",
+        "additionalFields": {
+          "dealName": "={{ $json.lead.company }} - Commercial Cleaning"
+        }
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        3120,
+        -320
+      ],
+      "id": "d81ec43c-e42e-400f-9dcf-68697f7a8073",
+      "name": "Create Deal"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.hubapi.com/crm/v4/objects/deals/{{ $json.dealId }}/associations/default/contacts/{{ $('Create or update a contact').item.json.vid }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_PRIVATE_APP_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3328,
+        -320
+      ],
+      "id": "89a18523-7cbf-4bcc-af86-588e22d04df6",
+      "name": "Associate Deal to Contact"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.hubapi.com/crm/v4/objects/deals/{{ $('Create Deal').item.json.dealId }}/associations/default/companies/{{ $('Prepare CRM Context').item.json.hubspot.company_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_PRIVATE_APP_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3568,
+        -320
+      ],
+      "id": "283cb75f-e244-489e-a00e-3f4711bf2ceb",
+      "name": "Associate Deal to Company"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return $json;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2896,
+        -320
+      ],
+      "id": "d6320745-ca8a-4a30-ab23-85f6134e8db1",
+      "name": "Prepare CRM Context"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-5-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write concise, professional responses to qualified inbound leads for Cascade Commercial Cleaning, a fictional commercial cleaning company used in this demo.\n\nYour job is to acknowledge the inquiry and move the lead toward a conversation about a quote.\n\nSTRICT RULES:\n- Use only facts explicitly provided in the lead data.\n- Never invent pricing.\n- Never invent availability, appointment times, dates, phone numbers, addresses, service requirements, certifications, regulations, or company capabilities.\n- Never assume details such as OSHA, CDC, medical-cleaning requirements, square footage, or specific facility requirements unless the lead explicitly mentioned them.\n- Do not promise that a quote is ready.\n- Do not claim that someone will call at a specific time.\n- Do not include placeholders such as [Your Name], [Company Name], or [phone number].\n- Do not mention AI, automation, lead qualification, CRM systems, internal routing, or confidence scores.\n- Do not ask for information unless it is naturally necessary to continue the conversation.\n- Keep the response between 70 and 130 words.\n- Be warm, professional, and concise.\n- Reference one or two specific details from the inquiry naturally.\n- End by inviting the prospect to arrange a brief conversation to discuss their needs and a quote.\n- Sign the email exactly:\n\nBest,\nCascade Commercial Cleaning\n\nReturn only the email body.\nDo not return a subject line.\nDo not use markdown."
+            },
+            {
+              "content": "=Write a response to this qualified lead.\n\nFirst name:\n{{ $('Prepare CRM Context').item.json.lead.first_name }}\n\nCompany:\n{{ $('Prepare CRM Context').item.json.lead.company }}\n\nOriginal inquiry:\n{{ $('Prepare CRM Context').item.json.lead.message }}\n\nAI analysis:\nCustomer type: {{ $('Prepare CRM Context').item.json.ai_analysis.customer_type }}\nService: {{ $('Prepare CRM Context').item.json.ai_analysis.service }}\nLocation: {{ $('Prepare CRM Context').item.json.ai_analysis.location }}\nFacility count: {{ $('Prepare CRM Context').item.json.ai_analysis.facility_count }}\nTimeline: {{ $('Prepare CRM Context').item.json.ai_analysis.timeline }}\nIntent: {{ $('Prepare CRM Context').item.json.ai_analysis.intent }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 400,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        3776,
+        -320
+      ],
+      "id": "e6ea9970-39e1-4528-88cc-42eca61fc94a",
+      "name": "Generate Lead Response"
+    },
+    {
+      "parameters": {
+        "sendTo": "=demo-inbox@example.com",
+        "subject": "=Commercial Cleaning Quote - {{ $('Prepare CRM Context').item.json.lead.company }}",
+        "emailType": "text",
+        "message": "={{ $json.output[0].content[0].text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4128,
+        -320
+      ],
+      "id": "a696d6ac-c120-4582-aeb4-ca0b3c43345e",
+      "name": "Send Lead Response",
+      "webhookId": "557d8651-42a1-4633-be19-2c39fc9d3af3"
+    },
+    {
+      "parameters": {
+        "sendTo": "demo-inbox@example.com",
+        "subject": "=🔥 HIGH PRIORITY LEAD - {{ $('Prepare CRM Context').item.json.lead.company }}",
+        "message": "={{ \n'<strong>NEW HIGH PRIORITY LEAD</strong><br><br>' +\n\n'<strong>Contact:</strong><br>' +\n$('Prepare CRM Context').item.json.lead.first_name + ' ' +\n$('Prepare CRM Context').item.json.lead.last_name + '<br><br>' +\n\n'<strong>Company:</strong><br>' +\n$('Prepare CRM Context').item.json.lead.company + '<br><br>' +\n\n'<strong>Email:</strong><br>' +\n$('Prepare CRM Context').item.json.lead.email + '<br><br>' +\n\n'<strong>Phone:</strong><br>' +\n$('Prepare CRM Context').item.json.lead.phone + '<br><br>' +\n\n'<strong>Location:</strong><br>' +\n$('Prepare CRM Context').item.json.ai_analysis.location + '<br><br>' +\n\n'<strong>Facilities:</strong><br>' +\n$('Prepare CRM Context').item.json.ai_analysis.facility_count + '<br><br>' +\n\n'<strong>Timeline:</strong><br>' +\n$('Prepare CRM Context').item.json.ai_analysis.timeline + '<br><br>' +\n\n'<strong>Intent:</strong><br>' +\n$('Prepare CRM Context').item.json.ai_analysis.intent + '<br><br>' +\n\n'<strong>AI Confidence:</strong><br>' +\n$('Prepare CRM Context').item.json.ai_analysis.confidence + '<br><br>' +\n\n'<strong>Original Inquiry:</strong><br>' +\n$('Prepare CRM Context').item.json.lead.message + '<br><br>' +\n\n'<strong>HubSpot Deal:</strong><br>' +\n$('Create Deal').item.json.properties.dealname.value + '<br><br>' +\n\n'<strong>Lead Qualification:</strong><br>' +\n$('Prepare CRM Context').item.json.qualification.reason + '<br><br>' +\n\n'<em>The lead has already received an automated response.</em>'\n}}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4368,
+        -432
+      ],
+      "id": "f7780659-4615-488e-90ca-577d0f838de5",
+      "name": "Notify Sales",
+      "webhookId": "a17d322b-12fc-42f7-aa67-94d5eede61a3"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-5-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write concise, polite responses to inbound leads that are not a fit for Cascade Commercial Cleaning.\n\nCascade Commercial Cleaning provides commercial cleaning services only. It does not provide residential, apartment, or home cleaning.\n\nRules:\n- Be polite and professional.\n- Keep the response under 90 words.\n- Use only facts explicitly provided in the lead.\n- Do not invent referrals, pricing, availability, or alternative providers.\n- Do not mention AI, automation, lead qualification, CRM systems, or internal routing.\n- Clearly explain that the company is not the right fit for the request.\n- Thank the person for reaching out.\n- Sign exactly:\n\nBest,\nCascade Commercial Cleaning\n\nReturn only the email body."
+            },
+            {
+              "content": "=Write a response to this inbound lead.\n\nFirst name:\n{{ $('Route Lead').item.json.lead.first_name }}\n\nOriginal inquiry:\n{{ $('Route Lead').item.json.lead.message }}\n\nReason the lead was not qualified:\n{{ $('Route Lead').item.json.qualification.reason }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 250,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        1712,
+        -80
+      ],
+      "id": "ce729a6d-d2a7-42cd-98d7-2c79ac77c7c9",
+      "name": "Generate Unqualified Response"
+    },
+    {
+      "parameters": {
+        "sendTo": "demo-inbox@example.com",
+        "subject": "demo-inbox@example.com",
+        "emailType": "text",
+        "message": "={{ $json.output[0].content[0].text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2096,
+        -80
+      ],
+      "id": "aa26185c-651e-4b47-978a-749b86fee3e3",
+      "name": "Send Unqualified Response",
+      "webhookId": "be4d3894-41c8-4f73-b4b5-5d1c443ab408"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -272,
+        -224
+      ],
+      "id": "ea9e0111-0c3f-44c3-87cb-495bf132c9b6",
+      "name": "Test Scenario Trigger"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// const scenario = 'high_priority';\n\n// const scenario = 'not_qualified';\n\nconst scenario = 'human_review';\n\n// Change ONLY the line above when testing.\n// Options:\n// high_priority\n// not_qualified\n// human_review\n\nconst leads = {\n  high_priority: {\n    first_name: 'Sarah',\n    last_name: 'Mitchell',\n    email: 'sarah@northwestdental.example',\n    phone: '206-555-0184',\n    company: 'Northwest Dental Group',\n    message:\n      \"Hi, I manage facilities for Northwest Dental Group. We operate 12 dental offices throughout the Seattle area and are looking for a commercial cleaning provider beginning next month. We'd like pricing for nightly service Monday through Friday. Could someone contact me this week to discuss a quote?\"\n  },\n\n  not_qualified: {\n    first_name: 'Emily',\n    last_name: 'Carter',\n    email: 'emily@residential.example',\n    phone: '425-555-0142',\n    company: '',\n    message:\n      'Hi, I live in an apartment in Bellevue and need someone to clean it tomorrow before my landlord comes by. How much would that cost?'\n  },\n\n  human_review: {\n    first_name: 'Michael',\n    last_name: 'Reed',\n    email: 'michael@evergreenproperties.example',\n    phone: '206-555-0197',\n    company: 'Evergreen Properties Group',\n    message:\n      'Hi, we manage a few properties in the area and may be interested in cleaning services sometime later this year. We are just trying to get some information right now.'\n  }\n};\n\nif (!leads[scenario]) {\n  throw new Error(`Unknown test scenario: ${scenario}`);\n}\n\nreturn {\n  headers: {},\n  params: {},\n  query: {},\n  body: leads[scenario]\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        -224
+      ],
+      "id": "c6b49866-a3ab-4cec-a3cf-e0c04bfa313a",
+      "name": "Select Test Lead"
+    },
+    {
+      "parameters": {
+        "sendTo": "demo-inbox@example.com",
+        "subject": "=⚠️ HUMAN REVIEW REQUIRED - {{ $('Route Lead').item.json.lead.company || $('Route Lead').item.json.lead.email }}",
+        "message": "={{ '<strong>HUMAN REVIEW REQUIRED</strong><br><br>' +  '<strong>Contact:</strong><br>' + $('Route Lead').item.json.lead.first_name + ' ' + $('Route Lead').item.json.lead.last_name + '<br><br>' +  '<strong>Company:</strong><br>' + ($('Route Lead').item.json.lead.company || 'Not provided') + '<br><br>' +  '<strong>Email:</strong><br>' + $('Route Lead').item.json.lead.email + '<br><br>' +  '<strong>Original Inquiry:</strong><br>' + $('Route Lead').item.json.lead.message + '<br><br>' +  '<strong>AI Interpretation:</strong><br>' + $('Route Lead').item.json.ai_analysis.reasoning_summary + '<br><br>' +  '<strong>AI Confidence:</strong><br>' + $('Route Lead').item.json.ai_analysis.confidence + '<br><br>' +  '<strong>Reason for Review:</strong><br>' + $('Route Lead').item.json.qualification.reason + '<br><br>' +  '<em>No automated sales response has been sent. A person should review this lead before deciding how to proceed.</em>' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1712,
+        144
+      ],
+      "id": "8e3d75e9-a86c-4735-b1c5-5e33cf8583b6",
+      "name": "Request Human Review",
+      "webhookId": "63e9ef0d-20d9-47db-88ec-6ce71b492ae6"
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4368,
+        -208
+      ],
+      "id": "72b7b7b9-5101-438e-b499-62ee02a6c2d1",
+      "name": "Wait Before Follow-Up",
+      "webhookId": "d2e1be9b-be43-438a-8c37-daac83140626"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 10,
+        "filters": {
+          "q": "={{ 'from:' + $('Prepare CRM Context').item.json.lead.email + ' newer_than:3d' }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4592,
+        -208
+      ],
+      "id": "a2943447-5d87-45d2-a855-63feec87b0d0",
+      "name": "Check for Lead Reply",
+      "webhookId": "e1556e81-4e69-44e1-9885-518af003e2d1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "157b9864-112b-4acd-863c-b71e4893d6aa",
+              "leftValue": "={{ Object.keys($json).length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4816,
+        -208
+      ],
+      "id": "3ac2df64-f689-495a-acf5-beefc622a5d3",
+      "name": "Reply found?"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-5-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write concise follow-up emails for Cascade Commercial Cleaning.\n\nThe prospect previously submitted a qualified commercial cleaning inquiry and received an initial response, but has not replied.\n\nWrite one brief, professional follow-up intended to restart the conversation.\n\nSTRICT RULES:\n- Begin with a standard business greeting in this exact format: Hi [First Name],\n- Use a comma after the recipient's first name. Do not use an em dash, hyphen, colon, or other punctuation in the greeting.\n- Do not invent pricing, availability, dates, appointment times, capabilities, requirements, or promises.\n- Use only facts explicitly present in the lead data.\n- Do not mention AI, automation, CRM systems, lead qualification, or internal workflow.\n- Do not sound pushy or overly sales-oriented.\n- Do not repeat the entire original response.\n- Keep the email between 50 and 100 words.\n- Briefly reference their original need.\n- Ask whether they would still like to discuss the project or a quote.\n- Use short paragraphs with a blank line between them.\n- Do not ask for a phone number or contact information already provided.\n- Sign exactly:\n\nBest,\nCascade Commercial Cleaning\n\nReturn only the email body.\nDo not include a subject line.\nDo not use markdown.\n\nDo not offer specific scheduling availability, a written proposal, or any next step that was not explicitly stated in the lead data."
+            },
+            {
+              "content": "=Write the follow-up for this lead.\n\nFirst name:\n{{ $('Prepare CRM Context').item.json.lead.first_name }}\n\nCompany:\n{{ $('Prepare CRM Context').item.json.lead.company }}\n\nOriginal inquiry:\n{{ $('Prepare CRM Context').item.json.lead.message }}\n\nOriginal response already sent:\n{{ $('Generate Lead Response').item.json.output[0].content[0].text }}\n\nDo not state or imply that the company is available, ready, or able to accommodate a next step unless that is explicitly stated in the lead data."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 400,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        5040,
+        -112
+      ],
+      "id": "5be57275-a77c-4c29-97ba-2dbac41908da",
+      "name": "Generate Follow-Up"
+    },
+    {
+      "parameters": {
+        "sendTo": "demo-inbox@example.com",
+        "subject": "=Following up - {{ $('Prepare CRM Context').item.json.lead.company }}",
+        "emailType": "text",
+        "message": "={{ $json.output[0].content[0].text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        5408,
+        -112
+      ],
+      "id": "3cd75160-0d55-4c1e-85c5-addd1a68eb53",
+      "name": "Send follow up",
+      "webhookId": "2589a210-090d-41ea-a1cb-aad7facc8d0c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lead": {
+      "main": [
+        [
+          {
+            "node": "Valid Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Lead?": {
+      "main": [
+        [
+          {
+            "node": "AI Lead Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate AI Output": {
+      "main": [
+        [
+          {
+            "node": "Qualification Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualification Rules": {
+      "main": [
+        [
+          {
+            "node": "Route Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Lead": {
+      "main": [
+        [
+          {
+            "node": "Create or update a contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Unqualified Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Human Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create or update a contact": {
+      "main": [
+        [
+          {
+            "node": "Find Company by Domain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Company by Domain": {
+      "main": [
+        [
+          {
+            "node": "Company Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company Found?": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Company",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Company": {
+      "main": [
+        [
+          {
+            "node": "Use New Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Existing Company": {
+      "main": [
+        [
+          {
+            "node": "Prepare CRM Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use New Company": {
+      "main": [
+        [
+          {
+            "node": "Prepare CRM Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Deal": {
+      "main": [
+        [
+          {
+            "node": "Associate Deal to Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Associate Deal to Contact": {
+      "main": [
+        [
+          {
+            "node": "Associate Deal to Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare CRM Context": {
+      "main": [
+        [
+          {
+            "node": "Create Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Associate Deal to Company": {
+      "main": [
+        [
+          {
+            "node": "Generate Lead Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Lead Response": {
+      "main": [
+        [
+          {
+            "node": "Send Lead Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Lead Response": {
+      "main": [
+        [
+          {
+            "node": "Notify Sales",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait Before Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Unqualified Response": {
+      "main": [
+        [
+          {
+            "node": "Send Unqualified Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Scenario Trigger": {
+      "main": [
+        [
+          {
+            "node": "Select Test Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Test Lead": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Before Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Check for Lead Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Lead Reply": {
+      "main": [
+        [
+          {
+            "node": "Reply found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply found?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Generate Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Send follow up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}
